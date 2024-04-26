@@ -96,11 +96,12 @@ func Open(path string, opts *Options) (*Log, error) {
 }
 
 func (l *Log) load() error {
-	files, err := ioutil.ReadDir(l.path)
+	dir, err := os.Open(l.path)
 	if err != nil {
 		return err
 	}
-
+	defer dir.Close()
+	files, err := dir.ReadDir(-1)
 	for _, file := range files {
 		name := file.Name()
 

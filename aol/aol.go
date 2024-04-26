@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -326,7 +325,20 @@ func (l *Log) findSegment(index uint64) int {
 }
 
 func (l *Log) loadSegmentEntries(s *segment) error {
-	data, err := ioutil.ReadFile(s.path)
+	file, err := os.Open(s.path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Get file size
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	data := make([]byte, stat.Size())
+	_, err = file.Read(data)
 	if err != nil {
 		return err
 	}

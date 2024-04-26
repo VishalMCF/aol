@@ -51,10 +51,10 @@ var DefaultOptions = &Options{
 // Log represents a append only log
 type Log struct {
 	mu       sync.RWMutex
-	path     string     // absolute path to log directory
-	segments []*segment // all known log segments
-	sfile    *os.File   // tail segment file handle
-	wbatch   Batch      // reusable write batch
+	path     string              // absolute path to log directory
+	segments map[uint64]*segment // all known log segments
+	sfile    *os.File            // tail segment file handle
+	wbatch   Batch               // reusable write batch
 
 	opts    Options
 	closed  bool
@@ -85,7 +85,7 @@ func Open(path string, opts *Options) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Log{path: path, opts: *opts}
+	l := &Log{path: path, opts: *opts, segments: make(map[uint64]*segment)}
 	if err := os.MkdirAll(path, l.opts.DirPerms); err != nil {
 		return nil, err
 	}
@@ -114,26 +114,27 @@ func (l *Log) load() error {
 		}
 
 		if len(name) == 20 {
-			l.segments = append(l.segments, &segment{
+			l.segments[index] = &segment{
 				index: index,
 				path:  filepath.Join(l.path, name),
-			})
+			}
 		}
 	}
 
 	if len(l.segments) == 0 {
 		// Create a new log
-		l.segments = append(l.segments, &segment{
-			index: 1,
-			path:  filepath.Join(l.path, segmentName(1)),
-		})
-		l.sfile, err = os.OpenFile(l.segments[0].path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, l.opts.FilePerms)
+		startIndex := uint64(1)
+		l.segments[startIndex] = &segment{
+			index: startIndex,
+			path:  filepath.Join(l.path, segmentName(startIndex)),
+		}
+		l.sfile, err = os.OpenFile(l.segments[startIndex].path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, l.opts.FilePerms)
 		return err
 	}
 
 	// Open the last segment for appending
-	lseg := l.segments[len(l.segments)-1]
-	l.sfile, err = os.OpenFile(lseg.path, os.O_WRONLY, l.opts.FilePerms)
+	lSeg := l.segments[uint64(len(l.segments))]
+	l.sfile, err = os.OpenFile(lSeg.path, os.O_WRONLY, l.opts.FilePerms)
 	if err != nil {
 		return err
 	}
@@ -142,8 +143,7 @@ func (l *Log) load() error {
 		return err
 	}
 
-	// Load the last segment entries
-	if err := l.loadSegmentEntries(lseg); err != nil {
+	if err := l.loadSegmentEntries(lSeg); err != nil {
 		return err
 	}
 
@@ -201,7 +201,7 @@ func (l *Log) cycle() error {
 		return err
 	}
 
-	nidx := l.segments[len(l.segments)-1].index + 1
+	nidx := l.segments[uint64(len(l.segments))].index + 1
 	s := &segment{
 		index: nidx,
 		path:  filepath.Join(l.path, segmentName(nidx)),
@@ -211,7 +211,7 @@ func (l *Log) cycle() error {
 	if err != nil {
 		return err
 	}
-	l.segments = append(l.segments, s)
+	l.segments[s.index] = s
 	return nil
 }
 
@@ -265,13 +265,13 @@ func (l *Log) WriteBatch(b *Batch) error {
 
 func (l *Log) writeBatch(b *Batch) error {
 	// load the tail segment
-	s := l.segments[len(l.segments)-1]
+	s := l.segments[uint64(len(l.segments))]
 	if len(s.cbuf) > l.opts.SegmentSize {
 		// tail segment has reached capacity. Close it and create a new one.
 		if err := l.cycle(); err != nil {
 			return err
 		}
-		s = l.segments[len(l.segments)-1]
+		s = l.segments[uint64(len(l.segments))]
 	}
 
 	mark := len(s.cbuf)
@@ -289,7 +289,7 @@ func (l *Log) writeBatch(b *Batch) error {
 			if err := l.cycle(); err != nil {
 				return err
 			}
-			s = l.segments[len(l.segments)-1]
+			s = l.segments[uint64(len(l.segments))]
 			mark = 0
 		}
 		datas = datas[b.entries[i].size:]
@@ -315,7 +315,7 @@ func (l *Log) findSegment(index uint64) int {
 	i, j := 0, len(l.segments)
 	for i < j {
 		h := i + (j-i)/2
-		if index >= l.segments[h].index {
+		if index >= l.segments[uint64(h+1)].index {
 			i = h + 1
 		} else {
 			j = h
@@ -361,13 +361,11 @@ func loadNextBinaryEntry(data []byte) (n int, err error) {
 
 func (l *Log) loadSegment(index uint64) (*segment, error) {
 	// check the last segment first.
-	lseg := l.segments[len(l.segments)-1]
+	lseg := l.segments[uint64(len(l.segments))]
 	if index >= lseg.index {
 		return lseg, nil
 	}
-	// find in the segment array
-	idx := l.findSegment(index)
-	s := l.segments[idx]
+	s := l.segments[index]
 	if len(s.cpos) == 0 {
 		// load the entries from cache
 		if err := l.loadSegmentEntries(s); err != nil {
